@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prototype A: Major-first</title>
+<style>
+:root{--bg:#f6f5f2;--card:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#8a8984;--line:#e4e2dc;--accent:#2a78d6;--grad:#eb6834;--all:#6b6a66;color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+header{padding:20px 24px 4px}
+h1{font-size:20px;margin:0 0 4px}
+header p{margin:0;color:var(--ink2);max-width:900px}
+.badge{display:inline-block;font-size:11px;padding:1px 8px;border:1px solid var(--line);border-radius:10px;color:var(--ink2);margin-left:8px;vertical-align:middle;background:var(--card)}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 24px}
+.bar .status{color:var(--ink2);flex:1;min-width:200px}
+button,.chip{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:16px;padding:4px 12px;cursor:pointer}
+button:hover,.chip:hover{border-color:var(--ink2)}
+.chip{display:inline-flex;align-items:center;gap:6px}
+.chip .dot{width:9px;height:9px;border-radius:50%}
+.chip[aria-pressed=true]{background:var(--ink);color:#fff;border-color:var(--ink)}
+.grid{display:grid;gap:14px;padding:6px 24px 28px;grid-template-columns:1.05fr 1fr}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
+.card h2{font-size:14px;margin:0 0 2px}
+.card .sub{color:var(--ink2);font-size:12px;margin:0 0 8px}
+.span2{grid-row:span 2}
+svg{display:block;width:100%;height:auto}
+.tip{position:fixed;pointer-events:none;opacity:0;background:#111;color:#fff;font-size:12px;padding:6px 9px;border-radius:6px;z-index:9;max-width:240px;transition:opacity .08s}
+.state{stroke:#fcfcfb;stroke-width:.8;transition:opacity .2s}
+.state.sel{stroke:#0b0b0b;stroke-width:1.6}
+.pg-head{color:var(--ink2);font-size:13px}
+.pg-head big{display:block;font-size:34px;font-weight:700;color:#1d5e57;line-height:1.1}
+.pg-grid{display:grid;grid-template-columns:repeat(20,1fr);gap:3px;margin:10px 0}
+.pg-grid i{aspect-ratio:1;border-radius:2px;background:#e6e5e0}
+.pg-grid i.on{background:#2f7d74}
+.pg-ctl{background:#f3f2ee;border-radius:8px;padding:8px 12px}
+.pg-ctl input{width:100%}
+.pg-out{margin:2px 0 0}
+.note{color:var(--muted);font-size:11px;margin:6px 0 0}
+.axis text{fill:var(--ink2);font-size:11px}
+.legend text{fill:var(--ink2);font-size:16px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}.span2{grid-row:auto}}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.0.1/dist/topojson-client.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/dist/d3-sankey.min.js"></script>
+</head><body>
+<header><h1>Prototype A: Major-first <span class="badge">Illustrative data</span></h1>
+<p>I'm a [major]. Which industries do people like me end up in, how likely is an interview there, and where are the openings? The Sankey drives the other two views.</p></header>
+<div class="bar"><span class="status" id="status"></span><button id="reset">Reset</button></div>
+<div class="grid">
+  <div class="card span2"><h2>Where do majors flow?</h2><p class="sub">Click a major, an industry, or a flow to select it. Click again to deselect.</p><svg id="sankey"></svg></div>
+  <div class="card"><h2>From application to interview</h2><p class="sub">Follows the selection; blended by flow share when only a major is chosen.</p><div id="pg"></div></div>
+  <div class="card"><h2>Where are the openings?</h2><p class="sub" id="mapsub"></p><svg id="map"></svg><p class="note" id="top"></p></div>
+</div>
+<script>
+// ILLUSTRATIVE data for dashboard prototypes. Shapes mirror the real sources we plan to use
+// (ACS PUMS major->industry, Hiring Lab postings by state/sector, NY Fed unemployment), but values are made up.
+const DATA = (() => {
+  const majors = ["Computer Science", "Economics", "Biology", "Psychology", "Engineering", "Nursing"];
+  const industries = ["Tech", "Finance", "Healthcare", "Consulting", "Education"];
+  const grads = { "Computer Science": 80, Economics: 60, Biology: 70, Psychology: 75, Engineering: 65, Nursing: 40 }; // thousands
+  // share of each major's grads entering each industry (order = industries)
+  const flow = {
+    "Computer Science": [.62, .14, .04, .10, .10],
+    Economics:          [.10, .42, .06, .30, .12],
+    Biology:            [.06, .04, .58, .10, .22],
+    Psychology:         [.05, .06, .34, .19, .36],
+    Engineering:        [.38, .06, .12, .30, .14],
+    Nursing:            [0, 0, .93, 0, .07],
+  };
+  // share of applications that lead to an interview
+  const rate = { Tech: .08, Finance: .10, Healthcare: .15, Consulting: .07, Education: .20 };
+  const years = [2019, 2020, 2021, 2022, 2023, 2024, 2025];
+  const yf = { // posting index by year (2019 = 1)
+    Tech:       [1, .85, 1.25, 1.40, 1.00, .85, .80],
+    Finance:    [1, .85, 1.20, 1.20, .95, .90, .85],
+    Healthcare: [1, .90, 1.05, 1.20, 1.30, 1.35, 1.40],
+    Consulting: [1, .80, 1.15, 1.35, 1.00, .85, .80],
+    Education:  [1, .70, .95, 1.10, 1.15, 1.20, 1.20],
+  };
+  // entry-level openings per 100 recent grads (all industries), by state
+  const base = { Alabama:33, Alaska:27, Arizona:43, Arkansas:31, California:24, Colorado:42, Connecticut:18, Delaware:22,
+    "District of Columbia":14, Florida:48, Georgia:43, Hawaii:24, Idaho:42, Illinois:26, Indiana:34, Iowa:33, Kansas:33,
+    Kentucky:35, Louisiana:29, Maine:28, Maryland:28, Massachusetts:20, Michigan:28, Minnesota:34, Mississippi:28,
+    Missouri:33, Montana:36, Nebraska:33, Nevada:41, "New Hampshire":27, "New Jersey":25, "New Mexico":25, "New York":8,
+    "North Carolina":49, "North Dakota":37, Ohio:29, Oklahoma:34, Oregon:28, Pennsylvania:27, "Rhode Island":22,
+    "South Carolina":44, "South Dakota":36, Tennessee:41, Texas:49, Utah:51, Vermont:27, Virginia:36, Washington:26,
+    "West Virginia":27, Wisconsin:36, Wyoming:26 };
+  const strong = {
+    Tech: ["California","Washington","Texas","Utah","Colorado","Massachusetts","Virginia","North Carolina","Georgia","New York"],
+    Finance: ["New York","North Carolina","Connecticut","New Jersey","Illinois","Texas","Florida","Massachusetts","Delaware"],
+    Healthcare: ["Minnesota","Massachusetts","Pennsylvania","Ohio","Tennessee","Maryland","North Carolina","Florida","Texas","Utah"],
+    Consulting: ["District of Columbia","Virginia","Maryland","Massachusetts","New York","Illinois","Texas","California"],
+    Education: ["Utah","Texas","Florida","Georgia","North Carolina","Arizona","Idaho","South Carolina","Tennessee","Nevada"],
+  };
+  const stateNames = Object.keys(base);
+  const h = s => { let x = 2166136261; for (const c of s) { x ^= c.charCodeAt(0); x = Math.imul(x, 16777619); } return ((x >>> 0) % 1000) / 1000; };
+  const mult = (s, i) => (strong[i].includes(s) ? 1.5 : .85) * (.9 + .2 * h(s + i));
+  const stateOffset = s => (35 - base[s]) * .05 + (h(s + "u") - .5) * .6; // pct-pt unemployment offset vs national
+  const unemp = { // national, % (illustrative)
+    grads: [4.2, 9.0, 5.8, 4.0, 4.3, 5.0, 5.8],
+    all:   [3.7, 8.1, 5.4, 3.6, 3.6, 4.0, 4.2],
+  };
+  const totalGrads = d3.sum(majors, m => grads[m]);
+  const mix = industries.map((_, j) => d3.sum(majors, m => grads[m] * flow[m][j]) / totalGrads);
+
+  // weights over industries for a selection {major, industry}
+  function weights({ major = null, industry = null } = {}) {
+    if (industry) return industries.map(i => +(i === industry));
+    if (major) return flow[major];
+    return mix;
+  }
+  const dot = (w, f) => d3.sum(industries, (i, j) => w[j] * f(i));
+  // Map<state, openings per 100 grads> blended by weights, averaged over year indices
+  function openings(w, yi = d3.range(years.length)) {
+    const out = new Map();
+    for (const s of stateNames)
+      out.set(s, dot(w, i => base[s] * mult(s, i) * d3.mean(yi, k => yf[i][k])));
+    return out;
+  }
+  const interviewRate = w => dot(w, i => rate[i]);
+  return { majors, industries, grads, flow, rate, years, unemp, stateNames, stateOffset, openings, weights, interviewRate, mix };
+})();
+
+const DUR = new URLSearchParams(location.search).has("still") ? 0 : 250; // ?still disables animation (for screenshots)
+const IND_COLOR = { Tech: "#2a78d6", Finance: "#eb6834", Healthcare: "#1baf7a", Consulting: "#6250d6", Education: "#e87ba4" };
+
+const tip = (() => {
+  const el = document.createElement("div"); el.className = "tip"; document.body.appendChild(el);
+  return {
+    show(html, ev) {
+      el.innerHTML = html; el.style.opacity = 1;
+      const w = el.offsetWidth; let x = ev.clientX + 14;
+      if (x + w > innerWidth - 8) x = ev.clientX - w - 14;
+      el.style.left = x + "px"; el.style.top = ev.clientY + 14 + "px";
+    },
+    hide() { el.style.opacity = 0; },
+  };
+})();
+
+// 100-square pictogram + "apply to N jobs" slider
+function Pictogram(root) {
+  root.innerHTML = `<div class="pg-head"></div><div class="pg-grid"></div>
+    <div class="pg-ctl"><label>Applications you send: <b class="pg-n"></b></label>
+    <input type="range" min="5" max="100" step="5" value="40"><p class="pg-out"></p></div>`;
+  const head = root.querySelector(".pg-head"), grid = root.querySelector(".pg-grid"),
+        slider = root.querySelector("input"), nOut = root.querySelector(".pg-n"), out = root.querySelector(".pg-out");
+  grid.innerHTML = "<i></i>".repeat(100);
+  const cells = [...grid.children];
+  let rate = .1, label = "";
+  function render() {
+    const k = Math.round(rate * 100), n = +slider.value;
+    cells.forEach((c, i) => c.classList.toggle("on", i < k));
+    head.innerHTML = `For ${label}, roughly<big>1 in ${Math.round(1 / rate)}</big>applications becomes an interview (${(rate * 100).toFixed(1)}%)`;
+    nOut.textContent = n;
+    out.innerHTML = `Expect about <b>${(n * rate).toFixed(1)}</b> interviews.`;
+  }
+  slider.addEventListener("input", render);
+  return { update(r, l) { rate = r; label = l; render(); } };
+}
+
+// choropleth of US states. mode "brush": drag a box / click to select states (shift = add)
+async function Choropleth(svgEl, { mode = "hover", onSelect = () => {}, title = "Openings per 100 recent grads" } = {}) {
+  const topo = await d3.json("https://cdn.jsdelivr.net/npm/us-atlas@3.0.1/states-10m.json");
+  const feats = topojson.feature(topo, topo.objects.states).features.filter(f => DATA.stateNames.includes(f.properties.name));
+  const W = 960, H = 600;
+  const svg = d3.select(svgEl).attr("viewBox", `0 0 ${W} ${H}`);
+  const proj = d3.geoAlbersUsa().fitExtent([[10, 10], [W - 10, H - 70]], { type: "FeatureCollection", features: feats });
+  const path = d3.geoPath(proj);
+  const paths = svg.append("g").selectAll("path").data(feats).join("path").attr("class", "state").attr("d", path).attr("fill", "#ddd");
+  const hit = ev => { const ll = proj.invert(d3.pointer(ev, svg.node())); return ll && feats.find(f => d3.geoContains(f, ll)); };
+
+  const defs = svg.append("defs"), grad = defs.append("linearGradient").attr("id", "lg" + Math.random().toString(36).slice(2, 7));
+  const interp = t => d3.interpolateBlues(.12 + .8 * t);
+  d3.range(0, 1.01, .1).forEach(t => grad.append("stop").attr("offset", t).attr("stop-color", interp(t)));
+  const lg = svg.append("g").attr("class", "legend").attr("transform", `translate(20,${H - 52})`);
+  lg.append("text").attr("y", -6).text(title);
+  lg.append("rect").attr("width", 240).attr("height", 10).attr("fill", `url(#${grad.attr("id")})`);
+  const lo = lg.append("text").attr("y", 24), hi = lg.append("text").attr("y", 24).attr("x", 240).attr("text-anchor", "end");
+
+  let values = new Map(), selected = new Set(), color = () => "#ddd";
+  function paint() {
+    paths.transition().duration(DUR).attr("fill", f => color(values.get(f.properties.name)))
+      .attr("opacity", f => (!selected.size || selected.has(f.properties.name)) ? 1 : .3);
+    paths.classed("sel", f => selected.has(f.properties.name));
+  }
+  const api = {
+    setValues(m) {
+      values = m; const [a, b] = d3.extent([...m.values()]);
+      color = v => interp((v - a) / (b - a || 1));
+      lo.text(a.toFixed(0)); hi.text(b.toFixed(0)); paint();
+    },
+    setSelected(set) { selected = new Set(set); paint(); },
+    topStates(n = 3) { return [...values].sort((x, y) => y[1] - x[1]).slice(0, n); },
+  };
+
+  svg.on("pointermove", ev => {
+    const f = hit(ev); if (!f) return tip.hide();
+    const n = f.properties.name;
+    tip.show(`<b>${n}</b><br>${values.get(n)?.toFixed(1)} ${title.toLowerCase()}`, ev);
+  }).on("pointerleave", () => tip.hide());
+
+  if (mode === "brush") {
+    const brush = d3.brush().extent([[0, 0], [W, H]]).on("start", () => tip.hide()).on("end", ev => {
+      if (!ev.sourceEvent) return;
+      const add = ev.sourceEvent.shiftKey;
+      let next = add ? new Set(selected) : new Set();
+      if (ev.selection) {
+        const [[x0, y0], [x1, y1]] = ev.selection;
+        feats.forEach(f => { const c = path.centroid(f); if (c[0] >= x0 && c[0] <= x1 && c[1] >= y0 && c[1] <= y1) next.add(f.properties.name); });
+      } else {
+        const f = hit(ev.sourceEvent);
+        if (f) { const n = f.properties.name; selected.has(n) && !add ? (next = new Set(selected), next.delete(n)) : next.add(n); }
+        else next = new Set();
+        bg.call(brush.move, null);
+      }
+      selected = next; paint(); onSelect(new Set(selected));
+    });
+    var bg = svg.append("g").call(brush);
+    bg.select(".selection").attr("fill", "#2a78d6").attr("fill-opacity", .12).attr("stroke", "#2a78d6");
+    api.clear = () => { bg.call(brush.move, null); selected = new Set(); paint(); onSelect(new Set()); };
+  }
+  return api;
+}
+
+</script>
+<script>
+const sel = { major: null, industry: null };
+const pg = Pictogram(document.getElementById("pg"));
+let map;
+
+// ---- Sankey
+const W = 620, H = 470;
+const svg = d3.select("#sankey").attr("viewBox", `0 0 ${W} ${H}`);
+const nodes = [...DATA.majors.map(id => ({ id, kind: "major" })), ...DATA.industries.map(id => ({ id, kind: "industry" }))];
+const links = [];
+DATA.majors.forEach(m => DATA.industries.forEach((i, j) => { const v = DATA.grads[m] * DATA.flow[m][j]; if (v > 0) links.push({ source: m, target: i, value: v, share: DATA.flow[m][j] }); }));
+const { nodes: N, links: L } = d3.sankey().nodeId(d => d.id).nodeWidth(14).nodePadding(16).extent([[140, 8], [W - 110, H - 8]])
+  .nodeSort(null)({ nodes, links });
+const lg = svg.append("g").selectAll("path").data(L).join("path").attr("d", d3.sankeyLinkHorizontal())
+  .attr("fill", "none").attr("stroke", d => IND_COLOR[d.target.id]).attr("stroke-width", d => Math.max(1, d.width)).style("cursor", "pointer");
+const ng = svg.append("g").selectAll("g").data(N).join("g").style("cursor", "pointer");
+ng.append("rect").attr("x", d => d.x0).attr("y", d => d.y0).attr("width", d => d.x1 - d.x0).attr("height", d => d.y1 - d.y0)
+  .attr("fill", d => d.kind === "industry" ? IND_COLOR[d.id] : "#6b6a66");
+ng.append("text").attr("x", d => d.kind === "major" ? d.x0 - 8 : d.x1 + 8).attr("y", d => (d.y0 + d.y1) / 2).attr("dy", "0.35em")
+  .attr("text-anchor", d => d.kind === "major" ? "end" : "start").attr("font-size", 13).attr("fill", "#0b0b0b").text(d => d.id);
+
+lg.on("pointermove", (ev, d) => tip.show(`<b>${(d.share * 100).toFixed(0)}%</b> of ${d.source.id} grads enter ${d.target.id}<br>≈ ${d.value.toFixed(1)}k people`, ev))
+  .on("pointerleave", tip.hide)
+  .on("click", (ev, d) => { const same = sel.major === d.source.id && sel.industry === d.target.id; sel.major = same ? null : d.source.id; sel.industry = same ? null : d.target.id; update(); });
+ng.on("click", (ev, d) => { const k = d.kind; sel[k] = sel[k] === d.id ? null : d.id; update(); })
+  .on("pointermove", (ev, d) => tip.show(d.kind === "major" ? `<b>${d.id}</b><br>${DATA.grads[d.id]}k recent grads` : `<b>${d.id}</b><br>interview rate ${(DATA.rate[d.id] * 100).toFixed(0)}% of applications`, ev))
+  .on("pointerleave", tip.hide);
+
+const active = l => (!sel.major || l.source.id === sel.major) && (!sel.industry || l.target.id === sel.industry);
+function drawSankey() {
+  const any = sel.major || sel.industry;
+  lg.transition().duration(DUR).attr("stroke-opacity", d => !any ? .35 : active(d) ? .75 : .06);
+  ng.transition().duration(DUR).attr("opacity", d => {
+    if (!any) return 1;
+    return L.some(l => active(l) && (l.source.id === d.id || l.target.id === d.id)) ? 1 : .25;
+  });
+}
+
+// ---- linked update
+function update() {
+  const w = DATA.weights(sel);
+  const what = sel.industry ? `${sel.industry}${sel.major ? " jobs for " + sel.major + " grads" : " jobs"}` : sel.major ? `${sel.major} grads (blend of their industries)` : "all entry-level jobs";
+  document.getElementById("status").innerHTML = `Showing: <b>${what}</b>`;
+  document.getElementById("mapsub").textContent = `Postings per 100 recent grads for ${what}. Scale rescales to the selection.`;
+  pg.update(DATA.interviewRate(w), what);
+  if (map) {
+    map.setValues(DATA.openings(w));
+    document.getElementById("top").textContent = "Most openings: " + map.topStates().map(([s, v]) => `${s} (${v.toFixed(0)})`).join(", ");
+  }
+  drawSankey();
+}
+document.getElementById("reset").onclick = () => { sel.major = sel.industry = null; update(); };
+const q = new URLSearchParams(location.search); // presets, e.g. ?still&major=Economics&industry=Finance
+sel.major = q.get("major"); sel.industry = q.get("industry");
+update();
+Choropleth(document.getElementById("map")).then(m => { map = m; update(); });
+</script></body></html>
